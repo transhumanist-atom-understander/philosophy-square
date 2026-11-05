@@ -1,0 +1,186 @@
+---
+title: "melanoma_cases"
+author: "Alexander Davis"
+date: "11/13/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(patchwork)
+library(cowplot)
+library(gganimate)
+library(gifski)
+```
+
+[Melanoma cases from cBioPortal](https://www.cbioportal.org/results/mutations?Action=Submit&RPPA_SCORE_THRESHOLD=2.0&Z_SCORE_THRESHOLD=2.0&cancer_study_list=skcm_broad_dfarber%2Cskcm_mskcc_2014%2Cskcm_tcga_pub_2015%2Cskcm_dfci_2015%2Cskcm_vanderbilt_mskcc_2015%2Cskcm_broad%2Cskcm_tcga%2Cskcm_yale%2Cskcm_broad_brafresist_2012%2Cdesm_broad_2015%2Cmel_tsam_liang_2017%2Cmel_ucla_2016&case_set_id=all&data_priority=0&gene_list=BRAF%250ANRAS&geneset_list=%20&mutations_gene=BRAF&profileFilter=0&tab_index=tab_visualize)
+
+```{r}
+mutations <- read_tsv("~/philosophy_square/mutations.txt", col_types=cols(
+  STUDY_ID = col_character(),
+  SAMPLE_ID = col_character(),
+  BRAF = col_character(),
+  NRAS = col_character()
+))
+mutations %>%
+  transmute(BRAF = !is.na(BRAF), NRAS = !is.na(NRAS)) %>%
+  mutate(both = NRAS & BRAF) %>%
+  summarize(NRAS = mean(NRAS), BRAF = mean(BRAF), both = mean(both)) %>%
+  mutate(product = NRAS * BRAF, either = NRAS + BRAF - both,
+         conditional_BRAF = both / NRAS, conditional_NRAS = both / BRAF)
+```
+
+```{r}
+probabilities <- tibble(p = seq(0, 0.5, length.out=10)[-1]) %>%
+  group_by(p)
+full.plots <- probabilities %>%
+  do(with(., tibble(
+    mutation=c("both", "NRAS", "BRAF", "neither"),
+    width = c(p, p, 1-p, 1-p),
+    height = c(p, 1-p, p, 1-p),
+    x = c(p/2, p/2, p + (1-p)/2, p + (1-p)/2),
+    y = c((1-p) + p/2, (1-p)/2, (1-p) + p/2, (1-p)/2)
+  ))) %>%
+  do({
+    intable <- .
+    outplot <- ggplot(.) + 
+      geom_tile(aes(width = width, height = height, x=x, y=y, fill=mutation)) + 
+      facet_wrap(vars(p)) + 
+      coord_equal() + 
+      scale_fill_manual(values = c(both="purple", BRAF="cyan3", NRAS="cyan3", neither="grey")) + 
+      theme_nothing()
+      tibble(full_plot = list(outplot))
+  })
+conditional.plots <- probabilities %>%
+  do(with(., {
+    raw.widths <- c(p*(1-p), p^2, p*(1-p))
+    widths <- raw.widths / sum(raw.widths)
+    starts <- c(0, cumsum(widths)[-length(widths)])
+    tibble(
+      mutation=c("NRAS", "both", "BRAF"),
+      height = c(1, 1, 1),
+      y = c(1/2, 1/2, 1/2),
+      width = widths,
+      x = starts + widths/2
+    )
+  })) %>% 
+  do({
+    intable <- .
+    outplot <- ggplot(intable) + 
+      geom_tile(aes(width = width, height = height, x=x, y=y, fill=mutation)) + 
+      facet_wrap(vars(p)) + 
+      scale_fill_manual(values = c(both="purple", BRAF="cyan3", NRAS="cyan3", neither="grey")) + 
+      theme_nothing()
+    tibble(conditional_plot = list(outplot))
+  })
+combined.plot <- left_join(full.plots, conditional.plots, by="p") %>%
+  mutate(combined_plot = mapply(function(f, c) f / c + plot_layout(heights = c(5, 1)), full_plot, conditional_plot, SIMPLIFY=FALSE)) %>%
+  ungroup() %>%
+  mutate(number = rank(-p))
+```
+
+```{r}
+probabilities <- tibble(p = c(0, 0.5)) %>%
+  group_by(p)
+full.animation <- probabilities %>%
+  do(with(., tibble(
+    mutation=c("both", "NRAS", "BRAF", "neither"),
+    width = c(p, p, 1-p, 1-p),
+    height = c(p, 1-p, p, 1-p),
+    x = c(p/2, p/2, p + (1-p)/2, p + (1-p)/2),
+    y = c((1-p) + p/2, (1-p)/2, (1-p) + p/2, (1-p)/2)
+  ))) %>%
+  ggplot() + 
+    geom_tile(aes(width = width, height = height, x=x, y=y, fill=mutation)) + 
+    #facet_wrap(vars(p)) + 
+    transition_states(p, wrap=FALSE, transition_length=1, state_length = 0) + 
+    coord_equal() + 
+    scale_fill_manual(values = c(both="purple", BRAF="cyan3", NRAS="cyan3", neither="grey")) + 
+    theme_nothing()
+anim_save("melanoma_cases_full_animation.gif", animate(full.animation, renderer = gganimate::gifski_renderer()))
+knitr::include_graphics("melanoma_cases_full_animation.gif")
+```
+
+
+```{r}
+for (i in 1:nrow(combined.plot))
+{
+  ggsave(sprintf("animation/frame_%d.png", combined.plot$number[[i]]), combined.plot$combined_plot[[i]], width = unit(3, "in"), height = unit(3 + 3/8, "in"), dpi=96)
+}
+```
+
+With that out of the way, the actual article.
+
+# Why confirming one cause makes the others less likely: an exercise in using the philosophy square
+
+## Confirming one cause makes the others less likely
+
+Judea Pearl - Causality (section 1.2):
+
+> For example, if the admission criteria to a certain graduate school call for either high grades as an undergraduate or special musical talents, then these two attributes will be found to be correlated (negatively) in the student population of that school, even if these attributes are uncorrelated in the population at large. Indeed, students with low grades are likely to be exceptionally gifted in music, which explains their admission to the graduate school.
+
+The example describes two causes with one consequence:
+
+High grades → Admission ← Musical talent
+
+Imagine wondering if someone has high grades.
+
+1. They probably don't, because people with good grades are a minority.
+
+2. (after learning they got accepted into the school) There's a good chance that they do, because most people in the school have good grades.
+
+3. (after learning that they are musically talented) They probably don't. Not because musicians get bad grades, but since we already have an explanation for their acceptance to the graduate school, we have no particular reason to think they have good grades.
+
+Two updates occurred.
+Upon learning someone is a student at the graduate school, you update in favor of them having good grades
+But when you learn that they are talented at music, you go back to thinking they are unlikely to have good grades--an update against.
+
+To describe this more precisely, here's a real example with real numbers.
+Researchers have been doing DNA sequencing of melanomas--black skin tumors formed from melanin-producing cells.
+Most melanomas are found to have mutations in one of two genes: NRAS or BRAF.
+
+* The fraction of melanoma patients whose tumor has a NRAS mutation is about 0.21
+
+* The fraction with a BRAF mutation is about 0.46
+
+How about the fraction with both?
+
+* If these were independent, the fraction would be 0.21 * 0.46 = 0.096
+
+* In reality, though, the fraction in which both genes are mutated is only 0.018
+
+If most patients have one of these two mutations in their tumor, how come less than 2% have both mutations, instead of more like 10% as we would expect from an independence assumption?
+Does one mutation somehow prevent the other from occurring?
+No--actually it's exactly analogous to Pearl's example.
+Most cells have neither mutation, but to become a melanoma, a cell needs one or the other.
+(Roughly speaking--actually 65% have one of these two mutations, but 35% have neither.)
+  
+With these data, you can go through the updates more quantitatively.
+Imagine wondering whether a tissue sample has a BRAF mutation.
+
+1. (nobody's told you this is a melanoma sample, maybe it's just a cheek swab or something) It probably doesn't have a BRAF mutation because BRAF generally not mutated in human cells
+
+2. (somebody tells you it's a melanoma sample) There's a probability of 0.46 that there's a BRAF mutation
+
+3. (somebody tells you that it has an NRAS mutation) Actually, the probability is 0.018 / 0.21 = 0.089
+
+Again, the probability goes up, and then down.
+An update in favor, followed by an update against.
+That second update: one cause makes another less likely.
+I don't know if there's a name for this phenomenon, but we could call it interference of causes.
+
+## Introducing the philosophy square
+
+One way to illustrate interference is what Ronny Fernandez calls "the philosophy square."
+It's just a square where we mark out areas, which corresponds to the probabilities of events.
+If you draw a box around a Venn diagram, that's a philosophy square.
+But in this article, I'm going to show you philosophy squares representing independent events, which you do like this:
+
+For example, the top left rectangle has width P(A) and height P(B).
+Therefore it has area P(A) * P(B).
+This area represents P(A & B).
+Since P(A & B) = P(A) P(B), the events A and B are independent.
+You see, it's easy to draw independent events.
+
+## Drawing interference
+
